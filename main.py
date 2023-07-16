@@ -47,23 +47,17 @@ class Room:
 
 class User:
     users = {}
+    sid_uid = {}
     queue_free_id = []
 
-    def __init__(self, sid, username):
+
+    def __init__(self):
         self.user_id = User.generate_user_id()
-        self.username = username
-        self._sid = sid
-        self.room = None
+        self.username = None
         self.is_online = True
+        self.host_room = None
+        self.room = None
         User.users[self.user_id] = self
-
-    @property
-    def sid(self):
-        return self._sid
-
-    @sid.setter
-    def sid(self, sid):
-        self._sid = sid
 
     @staticmethod
     def generate_user_id():
@@ -71,6 +65,9 @@ class User:
             return User.queue_free_id[0]
         else:
             return len(User.users) + 1
+
+    def create_room(self, room_name):
+        pass
 
     def choise_room(self, room_id):
         if room_id is None:
@@ -85,38 +82,64 @@ class User:
             print("Комнаты с таким id нет, нужно выбрать другой id")
         return None
 
-    def del_room(self):
-        # Метод для удаления пользователя
-        for room in Room.rooms:
-            if room.room_id == self.room_id:
-                Room.queue_free_id.append(self.room_id)
-                Room.rooms.remove(room)
-                print(f"Комната с id: {self.room_id} удалена и все пользователи были отключены")
-                break
 
 
 @sio.event
 def connect(sid, environ):
-    query_string = environ['QUERY_STRING']
-    params = {k.strip(): v.strip() for k, v in [pair.split('=') for pair in query_string.split('&')]}
-    user_id = params.get('user_id')
-    if params.get('user_name'):
-        user_name = params.get('user_name')
-    else:
-        user_name = "Человек"
-    if User.users.get(user_id):
-        user = User.users.get(user_id)
-        user.sid = sid
-        sio.emit('message', to=sid, data={"message": f"С возвращением {user.username}"})
-    else:
-        user = User(sid, user_name)
-        sio.emit('message', to=sid, data={"message": f"Пользователь {user.username, user.user_id} создан"})
+    user = User()
+    User.sid_uid[sid] = user.user_id
+    sio.emit('message', to=sid, data={"message": f"Пользователь создан. Ваш id = {user.user_id}"})
+    print(f"Пользователь c user_id = {user.user_id} создан.")
+    lst_users = []
+    for user in User.users.values():
+        lst_users.append((user.user_id, user.username, user.is_online))
+    print(f"Пользователи на сервере: {lst_users}")
 
 
-# @sio.on('change_name')
-# def change_name(sid):
-#     pass
-#
+@sio.on('auth')
+def auth(sid, data):
+    try:
+        user_id = int(data.get("user_id"))
+        if not User.users.get(user_id):
+            sio.emit('message', to=sid, data={"message": f"Пользователя с таким user_id нет"})
+            print(f"Попытка авторизации")
+        else:
+            user = User.users.get(user_id)
+            if user.is_online:
+                sio.emit('message', to=sid, data={"message": f"Пользователь уже онлайн"})
+                print(f"Попытка авторизации")
+            else:
+                print(f"Пользователь авторизирован c user_id = {user.user_id}. "
+                      f"Пользователь c user_id = {User.users[User.sid_uid[sid]].user_id} удален")
+                User.queue_free_id.append(User.users[User.sid_uid[sid]].user_id)
+                del User.users[User.sid_uid[sid]]
+                del User.sid_uid[sid]
+                User.sid_uid[sid] = user.user_id
+                user.is_online = True
+                sio.emit('message', to=sid, data={"message": f"Авторизация выполнена"})
+    except ValueError:
+        sio.emit('message', to=sid, data={"message": f"Нужно отправить число"})
+        print(f"Попытка авторизации")
+    except (TypeError, AttributeError):
+        sio.emit('message', to=sid, data={"message": f"Нужно отправить json-файл с ключом user_id"})
+        print(f"Попытка авторизации")
+
+
+
+@sio.on('change_name')
+def change_name(sid, data):
+    username = data.get("username")
+    if username:
+        user = User.users.get(User.sid_uid[sid])
+        print(f"Пользователь с user_id = {user.user_id} сменил имя с {user.username} на {username}")
+        user.username = username
+        sio.emit('message', to=sid, data={"message": f"Имя успешно изменено на {username}"})
+    else:
+        sio.emit('message', to=sid, data={"message": f"Нужно отправить json-файл с ключом username"})
+        print(f"Попытка смены имени")
+
+
+
 # @sio.on('create_room')
 # def create_room(sid):
 #     user =
@@ -126,9 +149,20 @@ def connect(sid, environ):
 # def del_room(sid):
 #     pass
 
+@sio.on('del_user')
+def del_user(sid, data):
+    user = User.users.get(User.sid_uid[sid])
+    sio.emit('message', to=sid, data={"message": f"Пользователь с user_id = {user.user_id} удален"})
+    print(f"Пользователь с user_id = {user.user_id} удален")
+    sio.disconnect(sid)
+    User.queue_free_id.append(user.user_id)
+    del user
+
 @sio.on('disconnect')
 def disconnect(sid):
-    pass
+    user = User.users[User.sid_uid[sid]]
+    user.is_online = False
+    del User.sid_uid[sid]
 
 
 eventlet.wsgi.server(eventlet.listen(('', 5000)), app
